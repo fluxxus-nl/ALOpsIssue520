@@ -1,0 +1,117 @@
+name: $(Build.BuildId)
+
+trigger:
+ branches:
+   include:
+     - master
+
+variables:
+- group: 'PipelineVariables'
+
+pool: default
+
+steps:
+- checkout: self
+  clean: true 
+
+- task: ALOpsDockerCreate@1
+  displayName: 'ALOPS - Create Docker Image'
+  inputs:
+    includetesttoolkit: true
+    includetestlibrariesonly: true
+
+- task: ALOpsDockerStart@1
+  displayName: 'ALOPS - Start Docker Container'
+  inputs:
+    enable_api_services: true
+
+- task: ALOpsDockerWait@1
+  displayName: 'ALOPS - Wait for Docker Container to start'
+  inputs:
+    search_string: 'Ready for connections!'
+
+- task: ALOpsLicenseImport@1
+  displayName: 'ALOPS - License Import'
+  inputs:
+    usedocker: true
+    license_path: '$(LuxBeheerBcDevLicense)'
+
+- task: ALOpsAppCompiler@1
+  displayName: 'ALOPS - Compile Extension: App'
+  inputs:
+    usedocker: true
+    nav_app_version: '?.?.[yyyyWW].*'
+    targetproject: 'App/app.json'
+    app_file_suffix: '_APP'
+
+- task: ALOpsAppPublish@1
+  displayName: 'ALOPS - Publish Extension: App'
+  inputs:
+    usedocker: true
+    nav_artifact_app_filter: '*APP.app'
+    skip_verification: true
+
+- task: ALOpsAppCompiler@1
+  displayName: 'ALOPS - Compile Extension: Test'
+  inputs:
+    usedocker: true
+    nav_app_version: '?.?.[yyyyWW].*'
+    targetproject: 'Test/app.json'
+    app_file_suffix: '_TEST'
+
+- task: ALOpsAppPublish@1
+  displayName: 'ALOPS - Publish Extension: Test'
+  inputs:
+    usedocker: true
+    nav_artifact_app_filter: '*TEST.app'
+    skip_verification: true
+
+- task: ALOpsAppTest@1
+  displayName: 'ALOPS - Run TestSuite for API'
+  inputs:
+    usedocker: true
+    import_testtoolkit: false
+    import_action: 'Skip'
+    testpage: '130455'
+    testsuite: 'API'
+    resultfilename: 'TestResults1.xml'
+    failed_test_action: 'Ignore'
+  continueOnError: true
+
+- task: ALOpsAppTest@1
+  displayName: 'ALOPS - Run TestSuite'
+  inputs:
+    usedocker: true
+    disabledtests: '$(Build.SourcesDirectory)/Test/disabledtests/DisabledTests.json'
+    import_testtoolkit: false
+    import_action: 'Skip'
+    testpage: '130455'
+    extensionid: '78ba7129-4003-40b6-8c5b-90d514eb088b'
+    resultfilename: 'TestResults2.xml'
+    failed_test_action: 'Ignore'
+  continueOnError: true
+
+- task: PowerShell@2
+  displayName: 'Merge test Results'
+  inputs:
+    targetType: 'inline'
+    script: |
+      $TestResults1 = [xml](Get-Content -Path $(Build.SourcesDirectory)/TestResults1.xml)
+      $TestResults2 = [xml](Get-Content -Path $(Build.SourcesDirectory)/TestResults2.xml)
+      $TestResults2.DocumentElement.ChildNodes | ForEach-Object { $TestResults1.DocumentElement.AppendChild($TestResults1.ImportNode($_, $true)) | Out-Null }
+      Set-Content -Path $(Build.SourcesDirectory)/TestResults.xml -Value ($TestResults1.OuterXml)
+
+- task: PublishTestResults@2
+  displayName: 'Publish Test Results **/TestResults.xml'
+  inputs:
+    testResultsFormat: XUnit
+    testResultsFiles: '**/TestResults.xml'
+    failTaskOnFailedTests: true
+    testRunTitle: 'BC Test Results: $(Build.BuildId)'
+
+- task: ALOpsDockerRemove@1
+  displayName: 'ALOPS - Remove Docker Container'
+  enabled: true
+  inputs:
+    createsqlbackup: $(createSqlBackup)
+  condition: always()
